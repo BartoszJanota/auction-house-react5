@@ -4,7 +4,7 @@
 		module="auction_house_2.10"
 		revision="1.0"
 		status="integration"
-		publication="20141125121641"
+		publication="20141125171208"
 	>
 		<description>
 		auction_house
@@ -36,5 +36,6 @@
 		<dependency org="com.typesafe.akka" name="akka-testkit_2.10" rev="2.2.3" conf="compile->default(compile)"/>
 		<dependency org="org.scalatest" name="scalatest_2.10" rev="1.9.2-SNAP2" conf="test->default(compile)"/>
 		<dependency org="ch.qos.logback" name="logback-classic" rev="1.0.7" conf="compile->default(compile)"/>
+		<dependency org="com.typesafe.akka" name="akka-persistence-experimental_2.10" rev="2.3.6" conf="compile->default(compile)"/>
 	</dependencies>
 </ivy-module>

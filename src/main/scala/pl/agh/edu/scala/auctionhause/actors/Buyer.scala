@@ -14,7 +14,7 @@ class Buyer(id: Int, system: ActorSystem) extends Actor with FSM[BuyerState, Buy
 
   import system.dispatcher
 
-  val MAX_BID_PRICE: Int = 1000
+  val MAX_BID_PRICE: Int = 1500
   val SEARCH_DELAY = 3 seconds
   val rand = new Random(System.currentTimeMillis() + id * 12565355)
 
@@ -67,7 +67,7 @@ class Buyer(id: Int, system: ActorSystem) extends Actor with FSM[BuyerState, Buy
       log.info("Auction: Searched {} for {} and found another {} auctions: {}", sender.path.name, phrase, newAuctions.length, newAuctions.map(_.path.name))
       if (auctions.length > 0) {
         val rand = new Random(System.currentTimeMillis())
-        val price = rand.nextInt(MAX_BID_PRICE) * id/2 + 100/id
+        val price = rand.nextInt(MAX_BID_PRICE) * id/2 + 50/id
         log.info("Auction: {} auctions are going to be raised now", auctions.length)
         newAuctions.foreach(_ ! Bid(price))
         stay using Watching(newAuctions ::: auctions)

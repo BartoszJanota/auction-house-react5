@@ -6,11 +6,11 @@ package pl.agh.edu.scala.auctionhause
 trait AuctionProducts {
 
   //val products = List("Notebook", "Tablet", "Phone", "Smartphone", "Screen", "Keyboard", "PC", "Printer")
-  val products = List("Notebook", "Tablet")
+  val products = List("Notebook")
   //val sizes = List("Small", "Big", "Average")
   val sizes = List("Small")
   //val colors = List("Black", "White", "Gray", "Red", "Orange")
-  val colors = List("Black", "White")
+  val colors = List("Black")
   val searchList = products ::: sizes ::: colors
 
 }

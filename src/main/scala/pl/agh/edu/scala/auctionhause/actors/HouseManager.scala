@@ -7,7 +7,7 @@ import akka.actor._
  */
 
 class HouseManager(system: ActorSystem) extends Actor with FSM[HouseState, HouseData]{
-  val MAX_NUM_OF_AUCTIONS = 2
+  val MAX_NUM_OF_AUCTIONS = 1
   val NUM_OF_BUYERS = 2
   val NUM_OF_SELLERS = 1
   val AUCTION_SEARCH_NAME: String = "masterSearch/"

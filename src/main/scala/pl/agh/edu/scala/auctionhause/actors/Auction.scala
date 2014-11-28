@@ -1,130 +1,192 @@
 package pl.agh.edu.scala.auctionhause.actors
 
+import java.util.Random
+
 import akka.actor._
-import pl.agh.edu.scala.auctionhause.actors
+import akka.event.{Logging, LoggingReceive}
+import akka.persistence.{Recover, RecoveryCompleted, PersistentActor}
 
 import scala.concurrent.duration._
 
-
-
 /**
-  * Created by bj on 21.10.14.
+ * Created by bj on 25.11.14.
  */
-case class Auction(bidTime: FiniteDuration, deleteTime: FiniteDuration, system: ActorSystem, auctionSearchName: String, masterSearch: ActorRef) extends Actor with FSM[AuctionState, AuctionData]{
-
+class Auction(bidTime: FiniteDuration, deleteTime: FiniteDuration, system: ActorSystem, auctionSearchName: String, masterSearch: ActorRef, name: String, sellerId: Int) extends PersistentActor with ActorLogging {
   import system.dispatcher
 
   val auctionSearchPath: String = "../../" + auctionSearchName
 
-  startWith(NotInitialized, NotInitializedData)
+  val rand = new Random(System.currentTimeMillis() + 12565355)
 
-  when(NotInitialized) {
-    case Event(Start, _) => {
-      log.info("Auction: {} is being started, bidTime: {}, deleteTime: {}", getName, bidTime, deleteTime)
-      goto(Created) using NotBiddedYet
-    }
+  var buyers: List[ActorRef] = List()
 
-  }
+  var topBuyer: ActorRef = null
 
-  onTransition{
-    case NotInitialized -> Created => {
-      for((NotInitializedData, NotBiddedYet) <- Some(stateData, nextStateData)) {
-        val search: ActorSelection = context.actorSelection(auctionSearchPath)
-        search ! Register()
-        system.scheduler.scheduleOnce(bidTime, self, BidTimeExpired)
+  var topPrice: Long = 0
+
+  var bidTimeStarted: Long = 0
+  var deleteTimeStarted: Long = 0
+
+  override def persistenceId = name + sellerId
+
+  def updateState(event: AuctionStateChangeEvent): Unit = {
+    println("updatingState" )
+    context.become(
+      event.state match {
+        case AuctionCreated(newBidTimeStarted) => {
+          bidTimeStarted = newBidTimeStarted
+          println(bidTimeStarted)
+          val search: ActorSelection = context.actorSelection(auctionSearchPath)
+          search ! Register()
+          auctionCreated
+        }
+        case AuctionActivated(buyer, price) => {
+          if (price > topPrice){
+            (buyers diff List(buyer)).foreach(_ ! NewTopBuyer(price, buyer))
+            buyers = buyer :: (buyers diff List(buyer))
+            topBuyer = buyer
+            topPrice = price
+            log.info("topBuyer: {}, topPrice: {}", topBuyer, topPrice)
+          } else {
+            buyer ! CurrentOfferIsHigher(topPrice)
+          }
+          auctionActivated
+        }
+        case AuctionIgnored(localBidTimeStarted) => {
+          deleteTimeStarted = localBidTimeStarted
+          auctionIgnored
+        }
+        case AuctionSold(localDeleteStarted) => {
+          deleteTimeStarted = localDeleteStarted
+          auctionSold
+        }
+        case AcutionNotInitialized => auctionNotInitialized
       }
-    }
-    case Ignored -> Created => {
-      context.actorSelection(auctionSearchPath) ! Register
-      system.scheduler.scheduleOnce(bidTime, self, BidTimeExpired)
-    }
-    case Created -> Ignored => {
-      system.scheduler.scheduleOnce(deleteTime, self, DeleteTimeExpired)
-      context.actorSelection(auctionSearchPath) ! Unregister()
-    }
-    case Activated -> Sold =>{
-      context.actorSelection(auctionSearchPath) ! Unregister()
-    }
+    )
   }
 
-  when(Created){
-    case Event(BidTimeExpired, _)=>{
-      log.info("Auction: {} reached BidTime: {}", getName, bidTime)
-      context.parent ! BeingIgnored
-      goto(Ignored)
-    }
-    case Event(Bid(price), NotBiddedYet) => {
-      log.info("Auction: Buyer {} is biding with ${}", sender.path.name, price)
-      goto (Activated) using Bidded(List(sender), sender, price)
-    }
-  }
-
-  when(Activated){
-    case Event(Bid(price), Bidded(currentBuyers, topBuyer, topPrice)) => {
-      log.info("Auction: Buyer {} is biding with ${}", sender.path.name, price)
-      if (price > topPrice){
-        (currentBuyers diff List(sender)).foreach(_ ! NewTopBuyer(price, sender))
-        stay using Bidded(sender :: (currentBuyers diff List(sender)), sender, price)
-      } else {
-        sender ! CurrentOfferIsHigher(topPrice)
-        stay
+  def auctionNotInitialized: Actor.Receive = LoggingReceive {
+    case Start() =>
+      val localBidTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionCreated(localBidTimeStarted))) {
+        event =>
+          updateState(event)
+          log.info("Auction: {} is being started, bidTime: {}, deleteTime: {}", getName, bidTime, deleteTime)
+          system.scheduler.scheduleOnce(bidTime, self, BidTimeExpired())
       }
-    }
-    case Event(BidTimeExpired, Bidded(currentBuyers, topBuyer, topPrice)) => {
-      log.info("Auction: {} reached BidTime: {}", getName, bidTime)
-      system.scheduler.scheduleOnce(deleteTime, self, DeleteTimeExpired)
-      topBuyer ! WonTheAuction(topPrice)
-      goto(Sold)
-    }
+  }
+
+  def auctionCreated = LoggingReceive {
+    case BidTimeExpired() =>
+      val localDeleteTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionIgnored(localDeleteTimeStarted))){
+        event =>
+          log.info("Auction: {} reached BidTime: {}", getName, bidTime)
+          context.parent ! BeingIgnored
+          updateState(event)
+      }
+    case Bid(price) =>
+      persist(AuctionStateChangeEvent(AuctionActivated(sender, price))){
+        event =>
+          log.info("Auction: First bid {} from {}", price, sender.path.name)
+          updateState(event)
+      }
+  }
+
+  def auctionActivated = LoggingReceive {
+    case Bid(price) =>
+      persist(AuctionStateChangeEvent(AuctionActivated(sender, price))){
+        event =>
+/*          if (rand.nextInt(3) == 2){
+            println("Killing myself!")
+            self ! Recover()
+          }*/
+          log.info("Auction: Bid {} from {}", price, sender.path.name)
+          updateState(event)
+      }
+    case BidTimeExpired() =>
+      val localDeleteTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionSold(localDeleteTimeStarted))){
+        event =>
+          log.info("Auction: {} reached BidTime: {}", getName, bidTime)
+          system.scheduler.scheduleOnce(deleteTime, self, DeleteTimeExpired)
+          topBuyer ! WonTheAuction(topPrice)
+          updateState(event)
+      }
+  }
+
+  def auctionIgnored = LoggingReceive {
+    case DeleteTimeExpired() =>
+      val localDeleteTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionIgnored(localDeleteTimeStarted))){
+        event =>
+          log.info("Auction: {} reached DeleteTime: {}", getName, deleteTime)
+          updateState(event)
+          context stop self
+      }
+    case Relist() =>
+      val localBidTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionCreated(localBidTimeStarted))){
+        event =>
+          log.info("Auction: {} is being relisted now", getName)
+          updateState(event)
+          system.scheduler.scheduleOnce(bidTime, self, BidTimeExpired())
+      }
+  }
+  def auctionSold = LoggingReceive {
+    case DeleteTimeExpired() =>
+      val localDeleteTimeStarted = System.currentTimeMillis()
+      persist(AuctionStateChangeEvent(AuctionIgnored(localDeleteTimeStarted))){
+        event =>
+          log.info("Auction: {} reached DeleteTime: {}", getName, deleteTime)
+          updateState(event)
+          context stop self
+      }
   }
 
   def getName: String = {
     context.parent.path.name + '/' + self.path.name
   }
 
-  when(Ignored){
-    case Event(DeleteTimeExpired, _) => {
-      log.info("Auction: {} reached DeleteTime: {}", getName, deleteTime)
-      context stop self
-      stay
+
+  override def receiveCommand: Receive = auctionNotInitialized
+
+  override def receiveRecover: Receive = {
+    case evt: AuctionStateChangeEvent => {
+      println("recovering")
+      updateState(evt)
     }
-    case Event(Relist, _) => {
-      log.info("Auction: {} is being relisted now", getName)
-      goto(Created) using NotBiddedYet
+    case RecoveryCompleted => {
+      println("recovery completed")
+      val now = System.currentTimeMillis() / 1000
+      val diffBid: Long = now - (bidTimeStarted / 1000)
+      val diffDelete: Long = now - (deleteTimeStarted / 1000)
+      if(diffDelete != 0 && diffDelete < deleteTime.length){
+        log.info("Recovery: DeleteTime {} started at {}, now is {}, so is starts with new {} BidTime",
+          deleteTime.length, deleteTimeStarted, now, diffDelete)
+        system.scheduler.scheduleOnce(diffDelete seconds, self, DeleteTimeExpired())
+      }
+      else if (bidTimeStarted != 0 && diffBid < bidTime.length){
+        log.info("Recovery: BidTime {} started at {}, now is {}, so is starts with new {} BidTime",
+        bidTime.length, bidTimeStarted, now, diffBid)
+        system.scheduler.scheduleOnce(diffBid seconds, self, BidTimeExpired())
+      }
     }
   }
-
-  when(Sold){
-    case Event(DeleteTimeExpired, _) => {
-      log.info("Auction: {} reached DeleteTime: {}", getName, deleteTime)
-      context stop self
-      stay
-    }
-    case Event(_, _) =>
-      stay
-  }
-
 }
 
 sealed trait AuctionState
 
-sealed trait AuctionData
+case class AuctionCreated(bidTimeStarted: Long) extends AuctionState
 
-case object Created extends AuctionState
+case class AuctionActivated(firstBidder: ActorRef, price: Long) extends AuctionState
 
-case object Activated extends AuctionState
+case class AuctionIgnored(deleteTimeStarted: Long) extends AuctionState
 
-case object Ignored extends AuctionState
+case class AuctionSold(localDeleteTimeExpired: Long) extends AuctionState
 
-case object Sold extends AuctionState
+case object AcutionNotInitialized extends AuctionState
 
-case object NotInitialized extends AuctionState
+case class AuctionStateChangeEvent(state: AuctionState)
 
-case object NotBiddedYet extends AuctionData
-
-case class Bidded(buyers: List[ActorRef], topBuyer: ActorRef, topPrice: Long) extends AuctionData
-
-case object NotCreatedYet extends AuctionData
-
-case object NotInitializedData extends AuctionData
 

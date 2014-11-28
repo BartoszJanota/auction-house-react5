@@ -11,7 +11,7 @@ import java.util.Random
  */
 class Seller(id: Int, system: ActorSystem, maxNumOfAuctions: Int, auctionSearchName: String, masterSearch: ActorRef) extends Actor with FSM[SellerState, SellerData] with AuctionProducts{
 
-  val BID_TIME = 10 seconds
+  val BID_TIME = 20 seconds
   val DELETE_TIME = 2 seconds
   val rand = new Random(System.currentTimeMillis() + id * 12565355)
 
@@ -27,7 +27,10 @@ class Seller(id: Int, system: ActorSystem, maxNumOfAuctions: Int, auctionSearchN
       val auctionsToBeActivated = rand.nextInt(maxNumOfAuctions)
       val auctionNames = createAuctionNames(auctionsToBeActivated)
       val filteredAuctionNames = auctionNames.distinct
-      val auctions = (0 to filteredAuctionNames.length - 1).map(num => context.actorOf(Props(new Auction(BID_TIME, DELETE_TIME, system, auctionSearchName, masterSearch)), filteredAuctionNames(num))).toList
+      val auctions = (0 to filteredAuctionNames.length - 1).map(num => {
+        val name: String = filteredAuctionNames(num)
+        context.actorOf(Props(new Auction(BID_TIME, DELETE_TIME, system, auctionSearchName, masterSearch, name, id)), name)
+      }).toList
       goto(Auctioning) using ActiveAuctions(auctions)
     }
   }
@@ -35,7 +38,8 @@ class Seller(id: Int, system: ActorSystem, maxNumOfAuctions: Int, auctionSearchN
   onTransition{
     case NotAuctioning -> Auctioning => {
       for((NoActiveAuctions, ActiveAuctions(auctions)) <- Some(stateData, nextStateData)){
-        auctions.foreach(_ ! Start)
+        log.info("Seller: starting auctioning")
+        auctions.foreach(_ ! Start())
       }
     }
   }
